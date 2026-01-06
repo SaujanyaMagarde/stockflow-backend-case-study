@@ -1,104 +1,90 @@
-```javascript
-const { Sequelize, DataTypes, Op } = require('sequelize');
-const path = require('path');
+const mysql = require('mysql2/promise');
+require('dotenv').config();
 
-// Initialize Database (MySQL)
-const sequelize = new Sequelize(
-  process.env.DB_NAME || 'inventory_db',
-  process.env.DB_USER || 'root',
-  process.env.DB_PASS || 'password',
-  {
+// Create connection pool
+const pool = mysql.createPool({
     host: process.env.DB_HOST || 'localhost',
-    dialect: 'mysql',
-    logging: false
-  }
-);
-
-// --- Details Models ---
-
-const Company = sequelize.define('Company', {
-    id: { type: DataTypes.UUID, defaultValue: DataTypes.UUIDV4, primaryKey: true },
-    name: { type: DataTypes.STRING, allowNull: false }
+    user: process.env.DB_USER || 'root',
+    password: process.env.DB_PASS || 'password',
+    database: process.env.DB_NAME || 'inventory_db',
+    waitForConnections: true,
+    connectionLimit: 10,
+    queueLimit: 0,
+    multipleStatements: true // Important for running multiple CREATE TABLEs
 });
 
-const Warehouse = sequelize.define('Warehouse', {
-    id: { type: DataTypes.UUID, defaultValue: DataTypes.UUIDV4, primaryKey: true },
-    name: { type: DataTypes.STRING, allowNull: false },
-    location: { type: DataTypes.STRING }
-});
+// SQL Schema Definition
+const SCHEMA_SQL = `
+    CREATE TABLE IF NOT EXISTS Companies (
+        id CHAR(36) PRIMARY KEY,
+        name VARCHAR(255) NOT NULL
+    );
 
-const Supplier = sequelize.define('Supplier', {
-    id: { type: DataTypes.UUID, defaultValue: DataTypes.UUIDV4, primaryKey: true },
-    name: { type: DataTypes.STRING, allowNull: false },
-    contact_email: { type: DataTypes.STRING }
-});
+    CREATE TABLE IF NOT EXISTS Warehouses (
+        id CHAR(36) PRIMARY KEY,
+        company_id CHAR(36) NOT NULL,
+        name VARCHAR(255) NOT NULL,
+        location VARCHAR(255),
+        FOREIGN KEY (company_id) REFERENCES Companies(id)
+    );
 
-const Product = sequelize.define('Product', {
-    id: { type: DataTypes.UUID, defaultValue: DataTypes.UUIDV4, primaryKey: true },
-    sku: { type: DataTypes.STRING, allowNull: false },
-    name: { type: DataTypes.STRING, allowNull: false },
-    price: { type: DataTypes.DECIMAL(10, 2), allowNull: false },
-    reorder_threshold: { type: DataTypes.INTEGER, defaultValue: 0, allowNull: true } // Renamed from custom_threshold
-}, {
-    indexes: [
-        { unique: true, fields: ['sku', 'CompanyId'] } // Unique SKU per company
-    ]
-});
+    CREATE TABLE IF NOT EXISTS Suppliers (
+        id CHAR(36) PRIMARY KEY,
+        name VARCHAR(255) NOT NULL,
+        contact_email VARCHAR(255)
+    );
 
-const Inventory = sequelize.define('Inventory', {
-    id: { type: DataTypes.UUID, defaultValue: DataTypes.UUIDV4, primaryKey: true },
-    quantity: { type: DataTypes.INTEGER, defaultValue: 0, allowNull: false }
-}, {
-    indexes: [
-        { unique: true, fields: ['ProductId', 'WarehouseId'] } // One record per product per warehouse
-    ]
-});
+    CREATE TABLE IF NOT EXISTS Products (
+        id CHAR(36) PRIMARY KEY,
+        company_id CHAR(36) NOT NULL,
+        sku VARCHAR(255) NOT NULL,
+        name VARCHAR(255) NOT NULL,
+        price DECIMAL(10, 2) NOT NULL,
+        reorder_threshold INT DEFAULT 0,
+        FOREIGN KEY (company_id) REFERENCES Companies(id),
+        UNIQUE KEY unique_sku_company (sku, company_id)
+    );
 
-const Sale = sequelize.define('Sale', {
-    id: { type: DataTypes.UUID, defaultValue: DataTypes.UUIDV4, primaryKey: true },
-    quantity: { type: DataTypes.INTEGER, allowNull: false },
-    sold_at: { type: DataTypes.DATE, defaultValue: DataTypes.NOW }
-});
+    CREATE TABLE IF NOT EXISTS Inventory (
+        id CHAR(36) PRIMARY KEY,
+        product_id CHAR(36) NOT NULL,
+        warehouse_id CHAR(36) NOT NULL,
+        quantity INT DEFAULT 0,
+        FOREIGN KEY (product_id) REFERENCES Products(id),
+        FOREIGN KEY (warehouse_id) REFERENCES Warehouses(id),
+        UNIQUE KEY unique_product_warehouse (product_id, warehouse_id)
+    );
 
-// --- Relationships ---
+    CREATE TABLE IF NOT EXISTS ProductSuppliers (
+        product_id CHAR(36) NOT NULL,
+        supplier_id CHAR(36) NOT NULL,
+        is_primary BOOLEAN DEFAULT FALSE,
+        PRIMARY KEY (product_id, supplier_id),
+        FOREIGN KEY (product_id) REFERENCES Products(id),
+        FOREIGN KEY (supplier_id) REFERENCES Suppliers(id)
+    );
 
-// Company Relationships
-Company.hasMany(Warehouse);
-Warehouse.belongsTo(Company);
+    CREATE TABLE IF NOT EXISTS Sales (
+        id CHAR(36) PRIMARY KEY,
+        product_id CHAR(36) NOT NULL,
+        warehouse_id CHAR(36) NOT NULL,
+        quantity INT NOT NULL,
+        sold_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+        FOREIGN KEY (product_id) REFERENCES Products(id),
+        FOREIGN KEY (warehouse_id) REFERENCES Warehouses(id)
+    );
+`;
 
-Company.hasMany(Product);
-Product.belongsTo(Company);
+async function initDB() {
+    try {
+        const connection = await pool.getConnection();
+        console.log('Connected to MySQL.');
+        await connection.query(SCHEMA_SQL);
+        console.log('Database Schema Initialized.');
+        connection.release();
+    } catch (err) {
+        console.error('Database Initialization Failed:', err);
+    }
+}
 
-// Product-to-Warehouse via Inventory
-Product.hasMany(Inventory, { onDelete: 'CASCADE' });
-Inventory.belongsTo(Product);
-
-Warehouse.hasMany(Inventory, { onDelete: 'CASCADE' });
-Inventory.belongsTo(Warehouse);
-
-// Product-to-Supplier (Many-to-Many)
-const ProductSupplier = sequelize.define('ProductSupplier', {
-    is_primary: { type: DataTypes.BOOLEAN, defaultValue: false }
-});
-Product.belongsToMany(Supplier, { through: ProductSupplier });
-Supplier.belongsToMany(Product, { through: ProductSupplier });
-
-// Sales tracking
-Product.hasMany(Sale);
-Sale.belongsTo(Product);
-
-// Sale also belongs to a Warehouse now for granular tracking
-Warehouse.hasMany(Sale);
-Sale.belongsTo(Warehouse);
-
-module.exports = {
-    sequelize,
-    Company,
-    Warehouse,
-    Supplier,
-    Product,
-    Inventory,
-    Sale,
-    ProductSupplier,
-    Op
-};
+module.exports = { pool, initDB };
