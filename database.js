@@ -1,12 +1,18 @@
+```javascript
 const { Sequelize, DataTypes, Op } = require('sequelize');
 const path = require('path');
 
-// Initialize SQLite database
-const sequelize = new Sequelize({
-    dialect: 'sqlite',
-    storage: path.join(__dirname, 'inventory.db'), // Database file
-    logging: false // Toggle to true to see SQL queries
-});
+// Initialize Database (MySQL)
+const sequelize = new Sequelize(
+  process.env.DB_NAME || 'inventory_db',
+  process.env.DB_USER || 'root',
+  process.env.DB_PASS || 'password',
+  {
+    host: process.env.DB_HOST || 'localhost',
+    dialect: 'mysql',
+    logging: false
+  }
+);
 
 // --- Details Models ---
 
